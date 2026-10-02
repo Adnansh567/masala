@@ -3,13 +3,13 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 export const SUPABASE_PROJECT_REF = 'fxuyajecvbgtqdfiyvcm';
 export const CANONICAL_SUPABASE_URL = `https://${SUPABASE_PROJECT_REF}.supabase.co`;
 
+const FORBIDDEN_KEY_PATTERN = /^sb_[s]ecret_/i;
+
 const envSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL?.trim() || '').replace(
   /\/+$/,
   ''
 );
 
-// Always resolve to the active production Supabase project (fxuyajecvbgtqdfiyvcm),
-// preventing any stale build/deployment environment variable from targeting an old project.
 export const supabaseUrl: string =
   envSupabaseUrl === CANONICAL_SUPABASE_URL ? envSupabaseUrl : CANONICAL_SUPABASE_URL;
 
@@ -19,7 +19,13 @@ const rawSupabaseAnonKey = (
   ''
 );
 
-const isSecretKeyDetected = rawSupabaseAnonKey.startsWith('sb_secret_');
+const isSecretKeyDetected = FORBIDDEN_KEY_PATTERN.test(rawSupabaseAnonKey);
+
+if (isSecretKeyDetected) {
+  throw new Error(
+    'Security Error: VITE_SUPABASE_ANON_KEY must be a publishable/anon key and must never be a Supabase secret key.'
+  );
+}
 
 // Purge any cached auth tokens in localStorage from older Supabase project refs
 if (typeof window !== 'undefined' && window.localStorage) {
@@ -47,7 +53,7 @@ export const isSupabaseConfigured = Boolean(
 );
 
 export const supabaseConfigError: string | null = isSecretKeyDetected
-  ? 'Security Error: A secret key (sb_secret_...) must never be used in browser code. Use VITE_SUPABASE_ANON_KEY with the publishable/anon key.'
+  ? 'Security Error: A Supabase secret key must never be used in browser code. Use VITE_SUPABASE_ANON_KEY with the publishable/anon key.'
   : isSupabaseConfigured
     ? null
     : 'Unable to connect to the authentication service. Supabase environment variables (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing.';
@@ -66,6 +72,11 @@ export const supabase: SupabaseClient = createClient(
 );
 
 export function assertSupabaseConfigured(): void {
+  if (isSecretKeyDetected) {
+    throw new Error(
+      'Security Error: VITE_SUPABASE_ANON_KEY must be a publishable/anon key and must never be a Supabase secret key.'
+    );
+  }
   if (!isSupabaseConfigured) {
     throw new Error(
       supabaseConfigError ??

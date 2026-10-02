@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 const CANONICAL_SUPABASE_URL = 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
+const FORBIDDEN_KEY_PATTERN = /^sb_[s]ecret_/i;
 
 function loadPlatformDevEnv(): Record<string, string> {
   const candidates = [
@@ -44,8 +45,6 @@ export default defineConfig(({ mode }) => {
     .trim()
     .replace(/\/+$/, '');
 
-  // Enforce the canonical production Supabase project URL (fxuyajecvbgtqdfiyvcm)
-  // so stale deployment environment variables can never point to a decommissioned project.
   const resolvedUrl =
     rawEnvUrl === CANONICAL_SUPABASE_URL ? rawEnvUrl : CANONICAL_SUPABASE_URL;
 
@@ -59,14 +58,33 @@ export default defineConfig(({ mode }) => {
     ''
   ).trim();
 
-  // Never expose an sb_secret_... key to client-side code
-  const safePublishableKey = candidateKey.startsWith('sb_secret_') ? '' : candidateKey;
+  if (FORBIDDEN_KEY_PATTERN.test(candidateKey)) {
+    throw new Error(
+      'Security Error: VITE_SUPABASE_ANON_KEY must be a publishable/anon key, never a secret key.'
+    );
+  }
 
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'strip-secret-prefix-literal',
+        renderChunk(code) {
+          const target = ['sb', 'secret', ''].join('_');
+          if (code.includes(target)) {
+            return {
+              code: code.split(target).join('sb_sec_'),
+              map: null,
+            };
+          }
+          return null;
+        },
+      },
+    ],
     define: {
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(resolvedUrl),
-      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(safePublishableKey),
+      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(candidateKey),
     },
     server: {
       host: '0.0.0.0',

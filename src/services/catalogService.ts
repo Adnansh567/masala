@@ -8,15 +8,15 @@ export interface CatalogData {
 
 /**
  * Resolves a product image path strictly from Supabase.
- * Never falls back to Unsplash or hardcoded demo images.
+ * Returns an empty string when image_path is null/empty so the UI placeholder renders.
  */
-export function resolveProductImagePath(imagePath?: string | null): string | null {
+export function resolveProductImagePath(imagePath?: string | null): string {
   if (!imagePath || typeof imagePath !== 'string') {
-    return null;
+    return '';
   }
   const trimmed = imagePath.trim();
   if (!trimmed) {
-    return null;
+    return '';
   }
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     const storageMarker = '/storage/v1/object/public/';
@@ -27,7 +27,7 @@ export function resolveProductImagePath(imagePath?: string | null): string | nul
     return trimmed;
   }
   const { data } = supabase.storage.from('product-images').getPublicUrl(trimmed);
-  return data?.publicUrl ?? null;
+  return data?.publicUrl ?? '';
 }
 
 /**
