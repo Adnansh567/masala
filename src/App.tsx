@@ -9,7 +9,10 @@ import {
   signOutFromSupabase,
   signUpWithSupabase,
 } from './services/authService';
-import { fetchCatalogFromSupabase } from './services/catalogService';
+import {
+  fetchCatalogFromSupabase,
+  updateProductStockInSupabase,
+} from './services/catalogService';
 import {
   addCartItem,
   clearActiveCart,
@@ -84,8 +87,19 @@ export default function App() {
   const [cartLoading, setCartLoading] = useState<boolean>(false);
   const [cartError, setCartError] = useState<string | null>(null);
 
-  // Wishlist (In-memory UI state for current session)
-  const [wishlistIds, setWishlistIds] = useState<string[]>([]);
+  // Guest Wishlist persisted in localStorage
+  const [wishlistIds, setWishlistIds] = useState<string[]>(() => {
+    try {
+      const stored = window.localStorage.getItem('kbr_guest_wishlist');
+      if (!stored) return [];
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  });
 
   // Checkout UI state
   const [paymentMethod, setPaymentMethod] = useState<'COD' | 'ONLINE'>('COD');
@@ -487,13 +501,37 @@ export default function App() {
 
   const toggleWishlist = (productId: string) => {
     setWishlistIds((prev) => {
-      if (prev.includes(productId)) {
-        showNotice('Removed from Wishlist.');
-        return prev.filter((id) => id !== productId);
+      const next = prev.includes(productId)
+        ? prev.filter((id) => id !== productId)
+        : [...prev, productId];
+      try {
+        if (next.length === 0) {
+          window.localStorage.removeItem('kbr_guest_wishlist');
+        } else {
+          window.localStorage.setItem('kbr_guest_wishlist', JSON.stringify(next));
+        }
+      } catch {
+        // Ignore storage errors
       }
-      showNotice('Added to Wishlist.');
-      return [...prev, productId];
+      showNotice(
+        prev.includes(productId) ? 'Removed from Wishlist.' : 'Added to Wishlist.'
+      );
+      return next;
     });
+  };
+
+  const handleToggleProductStock = async (product: Product) => {
+    try {
+      await updateProductStockInSupabase(product.id, !product.in_stock);
+      await loadCatalog();
+      showNotice(
+        `${product.name} marked as ${!product.in_stock ? 'In Stock' : 'Out of Stock'} in Supabase.`
+      );
+    } catch (err) {
+      setBackendError(
+        err instanceof Error ? err.message : 'Failed to update product stock in Supabase.'
+      );
+    }
   };
 
   const filteredProducts = useMemo(() => {
@@ -1744,6 +1782,15 @@ export default function App() {
                               </span>
                             </div>
                           </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleToggleProductStock(p)}
+                            className={`${
+                              p.in_stock ? 'bg-red-700' : 'bg-emerald-700'
+                            } text-white font-bold text-xs px-3 py-2 rounded-xl`}
+                          >
+                            Mark as {p.in_stock ? 'Out of Stock' : 'In Stock'}
+                          </button>
                         </div>
                       ))}
                     </div>

@@ -10,9 +10,6 @@ const envSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL?.trim() || '').replace
   ''
 );
 
-export const supabaseUrl: string =
-  envSupabaseUrl === CANONICAL_SUPABASE_URL ? envSupabaseUrl : CANONICAL_SUPABASE_URL;
-
 const rawSupabaseAnonKey = (
   import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() ||
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ||
@@ -26,6 +23,23 @@ if (isSecretKeyDetected) {
     'Security Error: VITE_SUPABASE_ANON_KEY must be a publishable/anon key and must never be a Supabase secret key.'
   );
 }
+
+const isUrlValid =
+  Boolean(envSupabaseUrl) &&
+  envSupabaseUrl.startsWith('https://') &&
+  !envSupabaseUrl.includes('placeholder') &&
+  !envSupabaseUrl.includes('your_') &&
+  envSupabaseUrl === CANONICAL_SUPABASE_URL;
+
+const isKeyValid =
+  Boolean(rawSupabaseAnonKey) &&
+  !rawSupabaseAnonKey.includes('placeholder') &&
+  !rawSupabaseAnonKey.includes('your_publishable_or_anon_key') &&
+  !isSecretKeyDetected;
+
+export const supabaseUrl: string = isUrlValid
+  ? envSupabaseUrl
+  : CANONICAL_SUPABASE_URL;
 
 // Purge any cached auth tokens in localStorage from older Supabase project refs
 if (typeof window !== 'undefined' && window.localStorage) {
@@ -46,17 +60,13 @@ if (typeof window !== 'undefined' && window.localStorage) {
   }
 }
 
-export const isSupabaseConfigured = Boolean(
-  supabaseUrl === CANONICAL_SUPABASE_URL &&
-    rawSupabaseAnonKey &&
-    !isSecretKeyDetected
-);
+export const isSupabaseConfigured = Boolean(isUrlValid && isKeyValid);
 
 export const supabaseConfigError: string | null = isSecretKeyDetected
   ? 'Security Error: A Supabase secret key must never be used in browser code. Use VITE_SUPABASE_ANON_KEY with the publishable/anon key.'
   : isSupabaseConfigured
     ? null
-    : 'Unable to connect to the authentication service. Supabase environment variables (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing.';
+    : 'Unable to connect to the authentication service. Supabase environment variables (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing or contain placeholder values.';
 
 export const supabase: SupabaseClient = createClient(
   supabaseUrl,

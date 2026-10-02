@@ -67,6 +67,7 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
       name: String(c.name ?? ''),
       slug: c.slug != null ? String(c.slug) : null,
       description: c.description != null ? String(c.description) : null,
+      active: c.active != null ? Boolean(c.active) : true,
       is_active:
         c.is_active != null
           ? Boolean(c.is_active)
@@ -75,6 +76,7 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
             : true,
       sort_order: typeof c.sort_order === 'number' ? c.sort_order : null,
       created_at: c.created_at != null ? String(c.created_at) : null,
+      updated_at: c.updated_at != null ? String(c.updated_at) : null,
     }));
 
   const categoryById = new Map<string, Category>();
@@ -82,7 +84,7 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
     categoryById.set(cat.id, cat);
   }
 
-  // First index parent product stock/availability so variants inherit product stock
+  // Index parent product stock/availability so variants inherit product stock
   // when product_variants does not define separate stock columns.
   const productStockById = new Map<string, { stock: number; inStock: boolean }>();
   for (const p of rawProducts) {
@@ -144,11 +146,13 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
       label: v.label != null ? String(v.label) : null,
       sku: v.sku != null ? String(v.sku) : null,
       price: salePrice ?? basePrice,
+      sale_price: salePrice,
       mrp: salePrice != null ? basePrice : v.mrp != null ? Number(v.mrp) : null,
       stock: Number.isNaN(stockNum) ? 0 : stockNum,
       in_stock: inStockFlag,
       is_active: v.is_active != null ? Boolean(v.is_active) : true,
       sort_order: typeof v.sort_order === 'number' ? v.sort_order : null,
+      created_at: v.created_at != null ? String(v.created_at) : null,
     };
 
     const existing = variantsByProductId.get(productId) ?? [];
@@ -172,6 +176,7 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
       return {
         id,
         category_id: categoryId,
+        sku: p.sku != null ? String(p.sku) : null,
         name: String(p.name ?? ''),
         slug: p.slug != null ? String(p.slug) : null,
         description:
@@ -180,13 +185,18 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
             : p.short_description != null
               ? String(p.short_description)
               : null,
+        short_description:
+          p.short_description != null ? String(p.short_description) : null,
         image_path: resolveProductImagePath(
           p.image_path != null ? String(p.image_path) : null
         ),
+        stock_quantity:
+          typeof p.stock_quantity === 'number' ? p.stock_quantity : parentStock.stock,
         is_active: p.is_active != null ? Boolean(p.is_active) : true,
         is_featured: p.is_featured != null ? Boolean(p.is_featured) : false,
         in_stock: productInStock,
         created_at: p.created_at != null ? String(p.created_at) : null,
+        updated_at: p.updated_at != null ? String(p.updated_at) : null,
         category: categoryId ? categoryById.get(categoryId) ?? null : null,
         variants: productVariants,
       };
@@ -196,4 +206,22 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
     categories,
     products,
   };
+}
+
+/**
+ * Updates product stock status directly in Supabase (never in localStorage).
+ */
+export async function updateProductStockInSupabase(
+  productId: string,
+  inStock: boolean
+): Promise<void> {
+  assertSupabaseConfigured();
+  const { error } = await supabase
+    .from('products')
+    .update({ in_stock: inStock })
+    .eq('id', productId);
+
+  if (error) {
+    throw new Error(`Failed to update product stock in Supabase: ${error.message}`);
+  }
 }

@@ -3,9 +3,11 @@ export interface Category {
   name: string;
   slug?: string | null;
   description?: string | null;
+  active?: boolean | null;
   is_active?: boolean | null;
   sort_order?: number | null;
   created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface ProductVariant {
@@ -15,24 +17,30 @@ export interface ProductVariant {
   label?: string | null;
   sku?: string | null;
   price: number;
+  sale_price?: number | null;
   mrp?: number | null;
   stock: number;
   in_stock: boolean;
   is_active?: boolean | null;
   sort_order?: number | null;
+  created_at?: string | null;
 }
 
 export interface Product {
   id: string;
   category_id?: string | null;
+  sku?: string | null;
   name: string;
   slug?: string | null;
   description?: string | null;
+  short_description?: string | null;
   image_path?: string | null;
+  stock_quantity?: number | null;
   is_active?: boolean | null;
   is_featured?: boolean | null;
   in_stock: boolean;
   created_at?: string | null;
+  updated_at?: string | null;
   category?: Category | null;
   variants: ProductVariant[];
 }
