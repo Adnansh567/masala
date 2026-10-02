@@ -1,4 +1,4 @@
-import { assertSupabaseConfigured, supabase } from '../lib/supabase';
+import { assertSupabaseConfigured, supabase, supabaseUrl } from '../lib/supabase';
 import { Category, Product, ProductVariant } from '../types/database';
 
 export interface CatalogData {
@@ -19,6 +19,11 @@ export function resolveProductImagePath(imagePath?: string | null): string | nul
     return null;
   }
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    const storageMarker = '/storage/v1/object/public/';
+    const markerIdx = trimmed.indexOf(storageMarker);
+    if (markerIdx !== -1 && trimmed.includes('.supabase.co')) {
+      return `${supabaseUrl}${trimmed.slice(markerIdx)}`;
+    }
     return trimmed;
   }
   const { data } = supabase.storage.from('product-images').getPublicUrl(trimmed);

@@ -4,6 +4,8 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+const CANONICAL_SUPABASE_URL = 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
+
 function loadPlatformDevEnv(): Record<string, string> {
   const candidates = [
     path.resolve(process.cwd(), '../.dev.env.json'),
@@ -33,12 +35,19 @@ export default defineConfig(({ mode }) => {
   const fileEnv = loadEnv(mode, process.cwd(), '');
   const devEnv = loadPlatformDevEnv();
 
-  const resolvedUrl = (
+  const rawEnvUrl = (
     process.env.VITE_SUPABASE_URL ||
     fileEnv.VITE_SUPABASE_URL ||
     devEnv.VITE_SUPABASE_URL ||
-    'https://fxuyajecvbgtqdfiyvcm.supabase.co'
-  ).trim();
+    CANONICAL_SUPABASE_URL
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
+  // Enforce the canonical production Supabase project URL (fxuyajecvbgtqdfiyvcm)
+  // so stale deployment environment variables can never point to a decommissioned project.
+  const resolvedUrl =
+    rawEnvUrl === CANONICAL_SUPABASE_URL ? rawEnvUrl : CANONICAL_SUPABASE_URL;
 
   const candidateKey = (
     process.env.VITE_SUPABASE_ANON_KEY ||
