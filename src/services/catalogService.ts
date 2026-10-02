@@ -34,7 +34,7 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
   assertSupabaseConfigured();
 
   const [categoriesRes, productsRes, variantsRes] = await Promise.all([
-    supabase.from('categories').select('*').order('name', { ascending: true }),
+    supabase.from('categories').select('*').order('sort_order', { ascending: true }),
     supabase.from('products').select('*').order('name', { ascending: true }),
     supabase.from('product_variants').select('*').order('price', { ascending: true }),
   ]);
@@ -56,13 +56,18 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
   const rawVariants = (variantsRes.data ?? []) as Array<Record<string, unknown>>;
 
   const categories: Category[] = rawCategories
-    .filter((c) => c.is_active !== false)
+    .filter((c) => c.is_active !== false && c.active !== false)
     .map((c) => ({
       id: String(c.id),
       name: String(c.name ?? ''),
       slug: c.slug != null ? String(c.slug) : null,
       description: c.description != null ? String(c.description) : null,
-      is_active: c.is_active != null ? Boolean(c.is_active) : true,
+      is_active:
+        c.is_active != null
+          ? Boolean(c.is_active)
+          : c.active != null
+            ? Boolean(c.active)
+            : true,
       sort_order: typeof c.sort_order === 'number' ? c.sort_order : null,
       created_at: c.created_at != null ? String(c.created_at) : null,
     }));
@@ -72,27 +77,60 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
     categoryById.set(cat.id, cat);
   }
 
+  // First index parent product stock/availability so variants inherit product stock
+  // when product_variants does not define separate stock columns.
+  const productStockById = new Map<string, { stock: number; inStock: boolean }>();
+  for (const p of rawProducts) {
+    const pid = String(p.id ?? '');
+    const prodStockNum =
+      typeof p.stock_quantity === 'number'
+        ? p.stock_quantity
+        : typeof p.stock === 'number'
+          ? p.stock
+          : 100;
+    const prodInStock =
+      typeof p.in_stock === 'boolean' ? p.in_stock : prodStockNum > 0;
+    productStockById.set(pid, {
+      stock: prodInStock ? Math.max(prodStockNum, 1) : 0,
+      inStock: prodInStock,
+    });
+  }
+
   const variantsByProductId = new Map<string, ProductVariant[]>();
   for (const v of rawVariants) {
-    if (v.is_active === false) {
+    if (v.is_active === false || v.active === false) {
       continue;
     }
     const productId = String(v.product_id ?? '');
     if (!productId) {
       continue;
     }
+    const parentStock = productStockById.get(productId) ?? {
+      stock: 100,
+      inStock: true,
+    };
+
+    const hasOwnStock =
+      typeof v.stock === 'number' || typeof v.stock_quantity === 'number';
     const stockNum =
       typeof v.stock === 'number'
         ? v.stock
         : typeof v.stock_quantity === 'number'
           ? v.stock_quantity
-          : Number(v.stock ?? 0);
+          : parentStock.stock;
+
     const inStockFlag =
       typeof v.in_stock === 'boolean'
         ? v.in_stock
-        : !Number.isNaN(stockNum)
+        : hasOwnStock
           ? stockNum > 0
-          : true;
+          : parentStock.inStock;
+
+    const basePrice = Number(v.price ?? 0);
+    const salePrice =
+      v.sale_price != null && Number(v.sale_price) > 0
+        ? Number(v.sale_price)
+        : null;
 
     const variant: ProductVariant = {
       id: String(v.id),
@@ -100,8 +138,8 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
       weight: String(v.weight ?? v.label ?? v.size ?? ''),
       label: v.label != null ? String(v.label) : null,
       sku: v.sku != null ? String(v.sku) : null,
-      price: Number(v.price ?? 0),
-      mrp: v.mrp != null ? Number(v.mrp) : null,
+      price: salePrice ?? basePrice,
+      mrp: salePrice != null ? basePrice : v.mrp != null ? Number(v.mrp) : null,
       stock: Number.isNaN(stockNum) ? 0 : stockNum,
       in_stock: inStockFlag,
       is_active: v.is_active != null ? Boolean(v.is_active) : true,
@@ -114,25 +152,29 @@ export async function fetchCatalogFromSupabase(): Promise<CatalogData> {
   }
 
   const products: Product[] = rawProducts
-    .filter((p) => p.is_active !== false)
+    .filter((p) => p.is_active !== false && p.active !== false)
     .map((p) => {
       const id = String(p.id);
       const categoryId = p.category_id != null ? String(p.category_id) : null;
-      const productVariants = variantsByProductId.get(id) ?? [];
+      const productVariants = (variantsByProductId.get(id) ?? []).sort(
+        (a, b) => a.price - b.price
+      );
+      const parentStock = productStockById.get(id) ?? { stock: 0, inStock: false };
       const hasVariantInStock = productVariants.some((v) => v.in_stock && v.stock > 0);
       const productInStock =
-        typeof p.in_stock === 'boolean'
-          ? p.in_stock && (productVariants.length === 0 || hasVariantInStock)
-          : productVariants.length > 0
-            ? hasVariantInStock
-            : false;
+        parentStock.inStock && (productVariants.length === 0 || hasVariantInStock);
 
       return {
         id,
         category_id: categoryId,
         name: String(p.name ?? ''),
         slug: p.slug != null ? String(p.slug) : null,
-        description: p.description != null ? String(p.description) : null,
+        description:
+          p.description != null
+            ? String(p.description)
+            : p.short_description != null
+              ? String(p.short_description)
+              : null,
         image_path: resolveProductImagePath(
           p.image_path != null ? String(p.image_path) : null
         ),

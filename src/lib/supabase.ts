@@ -1,30 +1,43 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() ?? '';
-const rawSupabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() ?? '';
+const DEFAULT_SUPABASE_URL = 'https://fxuyajecvbgtqdfiyvcm.supabase.co';
+
+const rawSupabaseUrl = (
+  import.meta.env.VITE_SUPABASE_URL?.trim() || DEFAULT_SUPABASE_URL
+).replace(/\/+$/, '');
+
+const rawSupabaseAnonKey = (
+  import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() ||
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+  ''
+);
+
+const isSecretKeyDetected = rawSupabaseAnonKey.startsWith('sb_secret_');
 
 export const isSupabaseConfigured = Boolean(
   rawSupabaseUrl &&
     rawSupabaseAnonKey &&
-    rawSupabaseUrl.startsWith('http') &&
-    !rawSupabaseUrl.includes('placeholder')
+    rawSupabaseUrl.startsWith('https://') &&
+    !rawSupabaseUrl.includes('placeholder') &&
+    !rawSupabaseUrl.includes('unconfigured-project') &&
+    !isSecretKeyDetected
 );
 
-export const supabaseConfigError: string | null = isSupabaseConfigured
-  ? null
-  : 'Supabase environment variables (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are not configured or invalid.';
+export const supabaseConfigError: string | null = isSecretKeyDetected
+  ? 'Security Error: A secret key (sb_secret_...) must never be used in browser code. Use VITE_SUPABASE_ANON_KEY with the publishable/anon key.'
+  : isSupabaseConfigured
+    ? null
+    : 'Unable to connect to the authentication service. Supabase environment variables (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY) are missing.';
 
-// Use a valid syntactic URL only to instantiate the client object; all service calls
-// explicitly assertConfiguration() so failed/unconfigured requests throw real errors
-// and never return fake or demo data.
 export const supabase: SupabaseClient = createClient(
-  isSupabaseConfigured ? rawSupabaseUrl : 'https://unconfigured-project.supabase.co',
+  isSupabaseConfigured ? rawSupabaseUrl : DEFAULT_SUPABASE_URL,
   isSupabaseConfigured ? rawSupabaseAnonKey : 'unconfigured-anon-key',
   {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: true,
+      storageKey: 'kbr-masale-supabase-auth',
     },
   }
 );
@@ -33,7 +46,7 @@ export function assertSupabaseConfigured(): void {
   if (!isSupabaseConfigured) {
     throw new Error(
       supabaseConfigError ??
-        'Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.'
+        'Unable to connect to the authentication service. Supabase environment variables are missing.'
     );
   }
 }

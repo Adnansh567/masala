@@ -1,8 +1,9 @@
-import { User } from '@supabase/supabase-js';
+import { Session, User } from '@supabase/supabase-js';
 import { assertSupabaseConfigured, supabase } from '../lib/supabase';
 import { UserProfile } from '../types/database';
 
 export interface AuthStatePayload {
+  session: Session | null;
   user: User | null;
   profile: UserProfile | null;
   roles: string[];
@@ -10,19 +11,43 @@ export interface AuthStatePayload {
 }
 
 /**
- * Always verifies the current user directly with Supabase Auth server.
- * Never trusts stale React state or localStorage.
+ * Retrieves the current persisted session from Supabase Auth.
+ */
+export async function getSupabaseSession(): Promise<Session | null> {
+  assertSupabaseConfigured();
+  const { data, error } = await supabase.auth.getSession();
+  if (error) {
+    if (
+      error.name === 'AuthSessionMissingError' ||
+      error.message?.toLowerCase().includes('auth session missing')
+    ) {
+      return null;
+    }
+    throw new Error(`Failed to get Supabase session: ${error.message}`);
+  }
+  return data.session ?? null;
+}
+
+/**
+ * Always verifies the current user directly with Supabase Auth server when a session exists.
+ * Never trusts stale React state or localStorage alone.
  */
 export async function getVerifiedSupabaseUser(): Promise<User | null> {
   assertSupabaseConfigured();
+
+  const session = await getSupabaseSession();
+  if (!session) {
+    return null;
+  }
+
   const { data, error } = await supabase.auth.getUser();
   if (error) {
-    // AuthSessionMissingError is normal when logged out (guest)
     if (
       error.name === 'AuthSessionMissingError' ||
       error.message?.toLowerCase().includes('auth session missing') ||
       error.status === 400 ||
-      error.status === 401
+      error.status === 401 ||
+      error.status === 403
     ) {
       return null;
     }
@@ -43,36 +68,51 @@ export async function fetchUserProfileAndRoles(user: User): Promise<{
   assertSupabaseConfigured();
 
   const [profileRes, rolesRes] = await Promise.all([
-    supabase
-      .from('profiles')
-      .select('id, email, full_name, phone, role, created_at')
-      .eq('id', user.id)
-      .maybeSingle(),
-    supabase
-      .from('user_roles')
-      .select('user_id, role')
-      .eq('user_id', user.id),
+    supabase.from('profiles').select('*').eq('id', user.id).maybeSingle(),
+    supabase.from('user_roles').select('*').eq('user_id', user.id),
   ]);
 
-  if (profileRes.error && profileRes.error.code !== 'PGRST116') {
-    throw new Error(`Failed to load user profile from Supabase: ${profileRes.error.message}`);
-  }
+  const rawProfile =
+    !profileRes.error && profileRes.data
+      ? (profileRes.data as Record<string, unknown>)
+      : null;
 
-  if (rolesRes.error && rolesRes.error.code !== 'PGRST116') {
-    throw new Error(`Failed to load user roles from Supabase: ${rolesRes.error.message}`);
-  }
+  const metadata = (user.user_metadata ?? {}) as Record<string, unknown>;
 
-  const profileData = (profileRes.data as UserProfile | null) ?? null;
-  const roleRows = (rolesRes.data as Array<{ user_id: string; role: string }> | null) ?? [];
+  const profileData: UserProfile = {
+    id: user.id,
+    email:
+      (rawProfile?.email != null ? String(rawProfile.email) : null) ??
+      user.email ??
+      null,
+    full_name:
+      (rawProfile?.full_name != null ? String(rawProfile.full_name) : null) ??
+      (rawProfile?.name != null ? String(rawProfile.name) : null) ??
+      (metadata.full_name != null ? String(metadata.full_name) : null) ??
+      null,
+    phone:
+      (rawProfile?.phone != null ? String(rawProfile.phone) : null) ??
+      (metadata.phone != null ? String(metadata.phone) : null) ??
+      user.phone ??
+      null,
+    role: rawProfile?.role != null ? String(rawProfile.role) : null,
+    created_at:
+      rawProfile?.created_at != null ? String(rawProfile.created_at) : user.created_at,
+  };
+
+  const roleRows =
+    !rolesRes.error && Array.isArray(rolesRes.data)
+      ? (rolesRes.data as Array<Record<string, unknown>>)
+      : [];
 
   const roleSet = new Set<string>();
   for (const row of roleRows) {
-    if (row.role) {
-      roleSet.add(row.role.toLowerCase());
+    if (typeof row.role === 'string' && row.role.trim()) {
+      roleSet.add(row.role.trim().toLowerCase());
     }
   }
-  if (profileData?.role) {
-    roleSet.add(profileData.role.toLowerCase());
+  if (profileData.role && profileData.role.trim()) {
+    roleSet.add(profileData.role.trim().toLowerCase());
   }
 
   const roles = Array.from(roleSet);
@@ -102,6 +142,7 @@ export async function signInWithSupabase(
 
   const { profile, roles, isAdmin } = await fetchUserProfileAndRoles(data.user);
   return {
+    session: data.session ?? null,
     user: data.user,
     profile,
     roles,
@@ -114,16 +155,20 @@ export async function signUpWithSupabase(params: {
   password: string;
   fullName: string;
   phone: string;
-}): Promise<{ user: User | null; sessionCreated: boolean }> {
+}): Promise<{ user: User | null; session: Session | null; sessionCreated: boolean }> {
   assertSupabaseConfigured();
 
+  const cleanEmail = params.email.trim();
+  const cleanName = params.fullName.trim();
+  const cleanPhone = params.phone.trim();
+
   const { data, error } = await supabase.auth.signUp({
-    email: params.email.trim(),
+    email: cleanEmail,
     password: params.password,
     options: {
       data: {
-        full_name: params.fullName.trim(),
-        phone: params.phone.trim(),
+        full_name: cleanName,
+        phone: cleanPhone,
       },
     },
   });
@@ -133,20 +178,23 @@ export async function signUpWithSupabase(params: {
   }
 
   if (data.user && data.session) {
-    // Attempt to upsert profile row under RLS if session is active
-    await supabase.from('profiles').upsert(
+    // Best-effort profile upsert under RLS when session is immediately active
+    const { error: upsertErr } = await supabase.from('profiles').upsert(
       {
         id: data.user.id,
-        email: params.email.trim(),
-        full_name: params.fullName.trim(),
-        phone: params.phone.trim(),
+        full_name: cleanName,
+        phone: cleanPhone,
       },
       { onConflict: 'id' }
     );
+    if (upsertErr) {
+      // Ignore if handled by auth trigger or restricted by schema/RLS
+    }
   }
 
   return {
     user: data.user ?? null,
+    session: data.session ?? null,
     sessionCreated: Boolean(data.session),
   };
 }

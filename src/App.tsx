@@ -3,6 +3,7 @@ import { User } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase, supabaseConfigError } from './lib/supabase';
 import {
   fetchUserProfileAndRoles,
+  getSupabaseSession,
   getVerifiedSupabaseUser,
   signInWithSupabase,
   signOutFromSupabase,
@@ -60,6 +61,7 @@ export default function App() {
   const [authPhone, setAuthPhone] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authModalError, setAuthModalError] = useState<string | null>(null);
+  const [pendingProtectedPage, setPendingProtectedPage] = useState<PageId | null>(null);
 
   const [adminModalOpen, setAdminModalOpen] = useState<boolean>(false);
   const [adminEmail, setAdminEmail] = useState('');
@@ -163,15 +165,18 @@ export default function App() {
 
     setAuthLoading(true);
     try {
-      const [verifiedUser, loadedProducts] = await Promise.all([
+      const [session, verifiedUser, loadedProducts] = await Promise.all([
+        getSupabaseSession(),
         getVerifiedSupabaseUser(),
         loadCatalog(),
       ]);
 
-      if (verifiedUser) {
-        setCurrentUser(verifiedUser);
+      const activeUser = verifiedUser ?? session?.user ?? null;
+
+      if (activeUser) {
+        setCurrentUser(activeUser);
         const { profile, isAdmin: adminVerified } = await fetchUserProfileAndRoles(
-          verifiedUser
+          activeUser
         );
         setUserProfile(profile);
         setIsAdmin(adminVerified);
@@ -203,8 +208,9 @@ export default function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (
+        event === 'INITIAL_SESSION' ||
         event === 'SIGNED_IN' ||
         event === 'SIGNED_OUT' ||
         event === 'TOKEN_REFRESHED' ||
@@ -212,7 +218,9 @@ export default function App() {
       ) {
         void (async () => {
           try {
-            const verifiedUser = await getVerifiedSupabaseUser();
+            const verifiedUser = session?.user
+              ? (await getVerifiedSupabaseUser()) ?? session.user
+              : null;
             if (verifiedUser) {
               setCurrentUser(verifiedUser);
               const { profile, isAdmin: adminVerified } =
@@ -226,7 +234,11 @@ export default function App() {
               setCurrentUser(null);
               setUserProfile(null);
               setIsAdmin(false);
-              setActivePage((prev) => (prev === 'admin' ? 'home' : prev));
+              setActivePage((prev) =>
+                prev === 'admin' || prev === 'orders' || prev === 'checkout'
+                  ? 'home'
+                  : prev
+              );
             }
             await refreshCart();
           } catch (err) {
@@ -247,6 +259,14 @@ export default function App() {
     if (pageId === 'admin' && !isAdmin) {
       setAdminModalError(null);
       setAdminModalOpen(true);
+      return;
+    }
+    if ((pageId === 'orders' || pageId === 'checkout') && !currentUser) {
+      setPendingProtectedPage(pageId);
+      setAuthModalError(null);
+      setAuthMode('signin');
+      setAuthModalOpen(true);
+      setMobileMenuOpen(false);
       return;
     }
     setActivePage(pageId);
@@ -270,6 +290,10 @@ export default function App() {
         await refreshCart();
         setAuthModalOpen(false);
         setAuthPassword('');
+        if (pendingProtectedPage) {
+          setActivePage(pendingProtectedPage);
+          setPendingProtectedPage(null);
+        }
         showNotice('Signed in successfully.');
       } else {
         const result = await signUpWithSupabase({
@@ -289,6 +313,10 @@ export default function App() {
           await refreshCart();
           setAuthModalOpen(false);
           setAuthPassword('');
+          if (pendingProtectedPage) {
+            setActivePage(pendingProtectedPage);
+            setPendingProtectedPage(null);
+          }
           showNotice('Account created and signed in.');
         } else {
           setAuthMode('signin');
@@ -374,7 +402,11 @@ export default function App() {
       setCurrentUser(null);
       setUserProfile(null);
       setIsAdmin(false);
-      if (activePage === 'admin') {
+      if (
+        activePage === 'admin' ||
+        activePage === 'orders' ||
+        activePage === 'checkout'
+      ) {
         setActivePage('home');
       }
       await refreshCart();

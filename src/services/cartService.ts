@@ -50,9 +50,8 @@ async function getOrCreateActiveCartId(userId: string): Promise<string> {
 
   const { data: existingCarts, error: selectError } = await supabase
     .from('carts')
-    .select('id, user_id')
+    .select('*')
     .eq('user_id', userId)
-    .order('created_at', { ascending: false })
     .limit(1);
 
   if (selectError) {
@@ -89,7 +88,6 @@ async function hydrateCartItemsFromSupabase(
     return [];
   }
 
-  // If catalogProducts are already loaded from Supabase, use them; otherwise query Supabase directly.
   const productMap = new Map<string, Product>();
   if (catalogProducts && catalogProducts.length > 0) {
     for (const p of catalogProducts) {
@@ -115,15 +113,41 @@ async function hydrateCartItemsFromSupabase(
       throw new Error(`Failed to load cart variant details: ${varRes.error.message}`);
     }
 
+    const rawProds = (prodRes.data ?? []) as Array<Record<string, unknown>>;
+    const prodStockById = new Map<string, { stock: number; inStock: boolean }>();
+    for (const p of rawProds) {
+      const pid = String(p.id ?? '');
+      const stockQty =
+        typeof p.stock_quantity === 'number'
+          ? p.stock_quantity
+          : typeof p.stock === 'number'
+            ? p.stock
+            : 100;
+      const inStock = typeof p.in_stock === 'boolean' ? p.in_stock : stockQty > 0;
+      prodStockById.set(pid, {
+        stock: inStock ? Math.max(stockQty, 1) : 0,
+        inStock,
+      });
+    }
+
     const variantsByProd = new Map<string, Product['variants']>();
     for (const v of (varRes.data ?? []) as Array<Record<string, unknown>>) {
       const pid = String(v.product_id ?? '');
+      const parentStock = prodStockById.get(pid) ?? { stock: 100, inStock: true };
+      const hasOwnStock =
+        typeof v.stock === 'number' || typeof v.stock_quantity === 'number';
       const stockNum =
         typeof v.stock === 'number'
           ? v.stock
           : typeof v.stock_quantity === 'number'
             ? v.stock_quantity
-            : Number(v.stock ?? 0);
+            : parentStock.stock;
+      const basePrice = Number(v.price ?? 0);
+      const salePrice =
+        v.sale_price != null && Number(v.sale_price) > 0
+          ? Number(v.sale_price)
+          : null;
+
       const list = variantsByProd.get(pid) ?? [];
       list.push({
         id: String(v.id),
@@ -131,23 +155,29 @@ async function hydrateCartItemsFromSupabase(
         weight: String(v.weight ?? v.label ?? ''),
         label: v.label != null ? String(v.label) : null,
         sku: v.sku != null ? String(v.sku) : null,
-        price: Number(v.price ?? 0),
-        mrp: v.mrp != null ? Number(v.mrp) : null,
+        price: salePrice ?? basePrice,
+        mrp: salePrice != null ? basePrice : v.mrp != null ? Number(v.mrp) : null,
         stock: Number.isNaN(stockNum) ? 0 : stockNum,
-        in_stock: typeof v.in_stock === 'boolean' ? v.in_stock : stockNum > 0,
+        in_stock:
+          typeof v.in_stock === 'boolean'
+            ? v.in_stock
+            : hasOwnStock
+              ? stockNum > 0
+              : parentStock.inStock,
       });
       variantsByProd.set(pid, list);
     }
 
-    for (const p of (prodRes.data ?? []) as Array<Record<string, unknown>>) {
+    for (const p of rawProds) {
       const pid = String(p.id);
       const vars = variantsByProd.get(pid) ?? [];
+      const parentStock = prodStockById.get(pid) ?? { stock: 100, inStock: true };
       productMap.set(pid, {
         id: pid,
         category_id: p.category_id != null ? String(p.category_id) : null,
         name: String(p.name ?? ''),
         image_path: resolveProductImagePath(p.image_path != null ? String(p.image_path) : null),
-        in_stock: typeof p.in_stock === 'boolean' ? p.in_stock : vars.some((v) => v.in_stock),
+        in_stock: parentStock.inStock,
         variants: vars,
       });
     }
@@ -181,7 +211,7 @@ async function hydrateCartItemsFromSupabase(
 
 /**
  * Loads the cart.
- * Always calls `supabase.auth.getUser()` first to determine whether the caller is authenticated or a guest.
+ * Always verifies the session with Supabase Auth first to determine whether the caller is authenticated or a guest.
  * Authenticated users use ONLY Supabase `carts` and `cart_items`.
  */
 export async function loadActiveCart(catalogProducts?: Product[]): Promise<CartItemView[]> {
@@ -204,7 +234,7 @@ export async function loadActiveCart(catalogProducts?: Product[]): Promise<CartI
   const cartId = await getOrCreateActiveCartId(user.id);
   const { data: itemRows, error } = await supabase
     .from('cart_items')
-    .select('id, cart_id, product_id, variant_id, quantity')
+    .select('*')
     .eq('cart_id', cartId)
     .order('id', { ascending: true });
 
@@ -215,8 +245,8 @@ export async function loadActiveCart(catalogProducts?: Product[]): Promise<CartI
   const normalized = ((itemRows ?? []) as Array<Record<string, unknown>>).map((row) => ({
     id: String(row.id),
     productId: String(row.product_id),
-    variantId: String(row.variant_id),
-    quantity: Number(row.quantity ?? 1),
+    variantId: String(row.variant_id ?? row.product_variant_id ?? ''),
+    quantity: Number(row.quantity ?? row.qty ?? 1),
   }));
 
   return hydrateCartItemsFromSupabase(normalized, catalogProducts);
@@ -224,7 +254,7 @@ export async function loadActiveCart(catalogProducts?: Product[]): Promise<CartI
 
 /**
  * Adds an item to the cart.
- * Verifies the session with `supabase.auth.getUser()` first.
+ * Verifies the session with Supabase Auth first.
  * Never writes authenticated cart items to localStorage.
  */
 export async function addCartItem(
@@ -254,7 +284,7 @@ export async function addCartItem(
 
   const { data: existingRow, error: findError } = await supabase
     .from('cart_items')
-    .select('id, quantity')
+    .select('*')
     .eq('cart_id', cartId)
     .eq('product_id', productId)
     .eq('variant_id', variantId)
@@ -265,7 +295,12 @@ export async function addCartItem(
   }
 
   if (existingRow && existingRow.id) {
-    const nextQty = Number(existingRow.quantity ?? 0) + quantityToAdd;
+    const currentQty = Number(
+      (existingRow as Record<string, unknown>).quantity ??
+        (existingRow as Record<string, unknown>).qty ??
+        0
+    );
+    const nextQty = currentQty + quantityToAdd;
     const { error: updateError } = await supabase
       .from('cart_items')
       .update({ quantity: nextQty })
@@ -293,7 +328,7 @@ export async function addCartItem(
 
 /**
  * Updates quantity of an item in the cart (or removes it if nextQuantity <= 0).
- * Verifies the session with `supabase.auth.getUser()` first.
+ * Verifies the session with Supabase Auth first.
  */
 export async function updateCartItemQuantity(
   item: CartItemView,
@@ -346,7 +381,7 @@ export async function updateCartItemQuantity(
 
 /**
  * Removes an item from the cart.
- * Verifies the session with `supabase.auth.getUser()` first.
+ * Verifies the session with Supabase Auth first.
  */
 export async function removeCartItem(
   item: CartItemView,
@@ -379,7 +414,7 @@ export async function removeCartItem(
 
 /**
  * Clears all items from the cart.
- * Verifies the session with `supabase.auth.getUser()` first.
+ * Verifies the session with Supabase Auth first.
  */
 export async function clearActiveCart(): Promise<void> {
   assertSupabaseConfigured();
@@ -418,7 +453,7 @@ export async function mergeGuestCartIntoSupabaseOnLogin(): Promise<void> {
 
   const { data: existingRows, error: fetchError } = await supabase
     .from('cart_items')
-    .select('id, product_id, variant_id, quantity')
+    .select('*')
     .eq('cart_id', cartId);
 
   if (fetchError) {
@@ -427,10 +462,11 @@ export async function mergeGuestCartIntoSupabaseOnLogin(): Promise<void> {
 
   const existingMap = new Map<string, { id: string; quantity: number }>();
   for (const row of (existingRows ?? []) as Array<Record<string, unknown>>) {
-    const key = `${String(row.product_id)}:${String(row.variant_id)}`;
+    const variantId = String(row.variant_id ?? row.product_variant_id ?? '');
+    const key = `${String(row.product_id)}:${variantId}`;
     existingMap.set(key, {
       id: String(row.id),
-      quantity: Number(row.quantity ?? 0),
+      quantity: Number(row.quantity ?? row.qty ?? 0),
     });
   }
 
